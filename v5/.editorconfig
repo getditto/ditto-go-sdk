@@ -1,0 +1,66 @@
+# top-most EditorConfig file
+root = true
+
+# Unix-style newlines with a newline ending every file
+[*]
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cjs,js,json,ts}]
+indent_size = 2
+
+[{*.go,*.go2}]
+indent_style = tab
+
+[*.sh]
+# like -i=4
+indent_style = space
+indent_size = 4
+switch_case_indent = false
+
+[[shell]]
+# like -i=4
+indent_style = space
+indent_size = 4
+switch_case_indent = false
+
+[{.cxx,gradlew*,node_modules}]
+ignore = true
+
+[subrepos/**]
+ignore = true
+
+[target/**]
+ignore = true
+
+[.direnv/**]
+ignore = true
+
+[crates/dittoffi/makefile-helpers]
+ignore = true
+
+[tools/size-measurements/**]
+ignore = true
+
+[scripts/generate_size_report.sh]
+ignore = true
+
+[scripts/dev/squashify.sh]
+ignore = true
+
+[downstream/hydra-bench-cfa/*/target/**]
+ignore = true
+
+[downstream/sdk-repl/*/target/**]
+ignore = true
+
+[**/Pods/**]
+ignore = true
+
+[**/node_modules/**]
+ignore = true
+
+[sdks/cocoa/openssl-apple/**]
+ignore = true
+
