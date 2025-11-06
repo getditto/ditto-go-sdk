@@ -1,0 +1,43 @@
+# Build output
+build/
+dist/
+srcdist/
+
+# Test artifacts and outputs
+test_output/
+*.test
+test.out
+test_version
+test_link
+test_binary
+debug*.go
+
+# Test coverage files
+*.coverage
+coverage.html
+coverage.out
+*.out
+
+# Ditto databases created during testing
+ditto-test-*/
+ditto_*_test/
+*_ditto_db/
+/tmp/ditto_*
+test_output/ditto_dbs/
+
+# Ditto log export archives
+*.jsonl.gz
+
+# Static and dynamic libraries
+*.a
+*.dylib
+*.so
+
+# Generated FFI header (copied from build)
+internal/ffi/dittoffi.h
+
+# Environment files (keep .env.sample)
+.env
+
+# OS files
+.DS_Store
