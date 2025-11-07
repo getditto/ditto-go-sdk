@@ -3,6 +3,9 @@ build/
 dist/
 srcdist/
 
+# Generated documentation
+docs/api-reference/
+
 # Test artifacts and outputs
 test_output/
 *.test
