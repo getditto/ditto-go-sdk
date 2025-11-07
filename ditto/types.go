@@ -202,9 +202,6 @@ type ListenHTTPConfig struct {
 	// WebsocketSync enables WebSocket connections for data sync
 	WebsocketSync bool `cbor:"websocket_sync" json:"websocket_sync"`
 
-	// StaticContentPath serves static files from this directory (optional)
-	StaticContentPath string `cbor:"static_content_path,omitempty" json:"static_content_path,omitempty"`
-
 	// TLSKeyPath is the path to the TLS private key file (optional, enables HTTPS)
 	TLSKeyPath string `cbor:"tls_key_path,omitempty" json:"tls_key_path,omitempty"`
 
@@ -525,27 +522,6 @@ func (t *TransportConfig) EnableHTTPListen(interfaceIP string, port int, enableW
 func (t *TransportConfig) SetHTTPTLS(certPath, keyPath string) *TransportConfig {
 	t.Listen.HTTP.TLSCertificatePath = certPath
 	t.Listen.HTTP.TLSKeyPath = keyPath
-	return t
-}
-
-// SetStaticContentPath configures the HTTP server to serve static files.
-//
-// This is useful for serving web applications that use Ditto's WebSocket
-// sync capabilities.
-//
-// Parameters:
-//   - path: Directory path containing static files to serve
-//
-// Returns the same TransportConfig for method chaining.
-//
-// Example:
-//
-//	config.EnableHTTPListen("[::]", 8080, true).
-//		SetStaticContentPath("/var/www/html")
-//
-// Deprecated: This API is experimental. It is not supported in this preview build and may change or be removed at any time.
-func (t *TransportConfig) SetStaticContentPath(path string) *TransportConfig {
-	t.Listen.HTTP.StaticContentPath = path
 	return t
 }
 
