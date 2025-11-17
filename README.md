@@ -16,7 +16,7 @@ Then, in any Go source file that uses the Ditto SDK, add this import:
 import "github.com/getditto/ditto-go-sdk/v5/ditto"
 ```
 
-API documentation for the Go SDK can be found at [https://pkg.go.dev/github.com/getditto/ditto-go-sdk/v5/ditto](https://pkg.go.dev/github.com/getditto/ditto-go-sdk/v5/ditto).
+API documentation for the Go SDK can be found at [https://software.ditto.live/go/Ditto/5.0.0-go-preview.3/docs/github.com/getditto/ditto-go-sdk/v5/ditto/index.html](https://software.ditto.live/go/Ditto/5.0.0-go-preview.3/docs/github.com/getditto/ditto-go-sdk/v5/ditto/index.html).
 
 
 ## Installing the Ditto Go SDK Native Library
@@ -31,19 +31,19 @@ Download `Ditto.tar.gz` and unpack an archive containing the `libdittoffi.so` (L
 #### Linux x86-64
 
 ```shell
-curl -O https://software.ditto.live/go-linux-x86_64/Ditto/5.0.0-go-preview.1/libs/libdittoffi-linux-x86_64.tar.gz && tar xvfz libdittoffi-linux-x86_64.tar.gz
+curl -O https://software.ditto.live/go/Ditto/5.0.0-go-preview.3/dist/libdittoffi-linux-x86_64.tar.gz && tar xvfz libdittoffi-linux-x86_64.tar.gz
 ```
 
 #### Linux aarch64
 
 ```shell
-curl -O https://software.ditto.live/go-linux-aarch64/Ditto/5.0.0-go-preview.1/libs/libdittoffi-linux-aarch64.tar.gz && tar xvfz libdittoffi-linux-aarch64.tar.gz
+curl -O https://software.ditto.live/go/Ditto/5.0.0-go-preview.3/dist/libdittoffi-linux-aarch64.tar.gz && tar xvfz libdittoffi-linux-aarch64.tar.gz
 ```
 
 #### macOS aarch64
 
 ```shell
-curl -O https://software.ditto.live/go-macos-aarch64/Ditto/5.0.0-go-preview.1/libs/libdittoffi-macos-aarch64.tar.gz && tar xvfz libdittoffi-macos-aarch64.tar.gz
+curl -O https://software.ditto.live/go/Ditto/5.0.0-go-preview.3/dist/libdittoffi-macos-aarch64.tar.gz && tar xvfz libdittoffi-macos-aarch64.tar.gz
 ```
 
 
