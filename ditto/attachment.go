@@ -339,8 +339,5 @@ func (a *Attachment) Reader() (io.ReadSeeker, error) {
 //
 // Deprecated: This API is experimental. It is not supported in this preview build and may change or be removed at any time.
 func (a *Attachment) Free() {
-	if a.handle != nil {
-		ffi.FreeAttachmentHandle(a.handle)
-		a.handle = nil
-	}
+	a.handle.Free()
 }

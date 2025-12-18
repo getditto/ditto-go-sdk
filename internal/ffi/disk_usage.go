@@ -15,12 +15,12 @@ extern void goDiskUsageRelease(void* context);
 static DiskUsageObserver_t *register_disk_usage_callback(
     CDitto_t const * ditto,
     FsComponent_t component,
-    void * ctx
+    uintptr_t ctx
 ) {
 	return ditto_register_disk_usage_callback(
 		ditto,
 		component,
-		ctx,
+		(void *)ctx,
 		goDiskUsageRetain,
 		goDiskUsageRelease,
 		goDiskUsageCallback
@@ -39,8 +39,16 @@ import (
 
 // DiskUsageHandle represents a disk usage observer handle
 type DiskUsageHandle struct {
-	ptr        *C.DiskUsageObserver_t
+	HandleCleaner[diskUsageHandleFreer]
 	callbackID uintptr
+}
+
+type diskUsageHandleFreer struct {
+	ptr *C.DiskUsageObserver_t
+}
+
+func (d diskUsageHandleFreer) free() {
+	C.ditto_release_disk_usage_callback(d.ptr)
 }
 
 // DiskUsageContext holds the Go callback and context for disk usage
@@ -62,7 +70,7 @@ func RegisterDiskUsageCallback(handle *DittoHandle, component FsComponent, callb
 
 	// Pass the callback ID directly as unsafe.Pointer
 	// This works because uintptr can be safely cast to unsafe.Pointer for callback context
-	callbackIDPtr := unsafe.Pointer(callbackID)
+	callbackIDPtr := C.uintptr_t(callbackID)
 
 	observerPtr := C.register_disk_usage_callback(
 		handle.load(),
@@ -76,16 +84,15 @@ func RegisterDiskUsageCallback(handle *DittoHandle, component FsComponent, callb
 		return nil, fmt.Errorf("failed to register disk usage callback")
 	}
 
-	return &DiskUsageHandle{ptr: observerPtr, callbackID: callbackID}, nil
+	d := &DiskUsageHandle{}
+	d.Initialize(diskUsageHandleFreer{ptr: observerPtr})
+	d.callbackID = callbackID
+	return d, nil
 }
 
 // ReleaseDiskUsageCallback releases a disk usage observer
 func ReleaseDiskUsageCallback(handle *DiskUsageHandle) {
-	if handle == nil || handle.ptr == nil {
-		return
-	}
-	C.ditto_release_disk_usage_callback(handle.ptr)
-	handle.ptr = nil
+	handle.Free()
 	// Unregister the Go callback
 	if handle.callbackID != 0 {
 		unregisterDiskUsageCallbackGo(handle.callbackID)

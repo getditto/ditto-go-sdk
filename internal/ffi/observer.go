@@ -11,9 +11,9 @@ extern void goStoreObserverCallback(void* context, dittoffi_query_result_t* resu
 extern void goStoreObserverFree(void* context);
 
 // Helper to create the callback struct
-static BoxDynFnMut2_void_dittoffi_query_result_ptr_ArcDynFn0_void_t create_store_observer_callback(void* context) {
+static BoxDynFnMut2_void_dittoffi_query_result_ptr_ArcDynFn0_void_t create_store_observer_callback(uintptr_t context) {
     BoxDynFnMut2_void_dittoffi_query_result_ptr_ArcDynFn0_void_t cb;
-    cb.env_ptr = context;
+    cb.env_ptr = (void *)context;
     cb.call = goStoreObserverCallback;
     cb.free = goStoreObserverFree;
     return cb;
@@ -30,7 +30,6 @@ import "C"
 import (
 	"fmt"
 	"log"
-	"runtime"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -41,11 +40,9 @@ import (
 
 // StoreObserverCallbackContext holds the Go callback and context with safe memory management.
 // This struct ensures callbacks remain valid during FFI calls through:
-// - runtime.Pinner to prevent GC from moving/collecting the context
 // - Atomic active flag to prevent use-after-free
 // - Finalizer for automatic cleanup if not explicitly unregistered
 type StoreObserverCallbackContext struct {
-	pinner                 *runtime.Pinner
 	callback               func(*QueryResultHandle)
 	callbackWithSignalNext func(*QueryResultHandle, func())
 	id                     uintptr
@@ -54,8 +51,10 @@ type StoreObserverCallbackContext struct {
 }
 
 var (
-	// Thread-safe observer management using sync.Map for lock-free reads.
-	// This eliminates mutex contention in the common case (callback invocation).
+	// Map from observer ID to *StoreObserverCallbackContext.
+	// Keeps Go memory in Go, while handing the map key callbackID to CGo, avoiding needing a runtime.Pinner
+	// sync.Map provides concurrent access with lock-free reads by eliminating mutex contention in
+	// the common case (callback invocation).
 	storeObserverContexts sync.Map // map[uintptr]*StoreObserverCallbackContext
 
 	// Atomic counter ensures unique IDs without race conditions
@@ -65,7 +64,6 @@ var (
 // RegisterStoreObserverCallback registers a Go callback in storeObserverContexts and returns its ID.
 // Safety features:
 // - Atomic ID generation prevents ID conflicts
-// - runtime.Pinner prevents GC interference during FFI calls
 // - sync.Map storage allows concurrent access without locks
 // - Finalizer ensures cleanup even if UnregisterObserverCallback is not called
 func RegisterStoreObserverCallback(callback func(*QueryResultHandle)) uintptr {
@@ -73,22 +71,14 @@ func RegisterStoreObserverCallback(callback func(*QueryResultHandle)) uintptr {
 	id := uintptr(nextStoreObserverID.Add(1))
 
 	ctx := &StoreObserverCallbackContext{
-		pinner:     &runtime.Pinner{},
 		callback:   callback,
 		id:         id,
 		autoSignal: true, // Simple callbacks auto-signal
 	}
 	ctx.active.Store(true)
 
-	// Pin the context to prevent GC from moving or collecting it
-	// This is CRITICAL for FFI safety - the C code holds a pointer to this context
-	ctx.pinner.Pin(ctx)
-
 	// Store in thread-safe map for lock-free retrieval during callbacks
 	storeObserverContexts.Store(id, ctx)
-
-	// Set finalizer for cleanup - acts as safety net if user forgets to unregister
-	runtime.SetFinalizer(ctx, (*StoreObserverCallbackContext).finalize)
 
 	return id
 }
@@ -99,38 +89,25 @@ func RegisterStoreObserverCallbackWithSignalNext(callback func(*QueryResultHandl
 	id := uintptr(nextStoreObserverID.Add(1))
 
 	ctx := &StoreObserverCallbackContext{
-		pinner:                 &runtime.Pinner{},
 		callbackWithSignalNext: callback,
 		id:                     id,
 		autoSignal:             false, // Callback controls signal timing
 	}
 	ctx.active.Store(true)
 
-	// Pin the context to prevent GC from moving or collecting it
-	// This is CRITICAL for FFI safety - the C code holds a pointer to this context
-	ctx.pinner.Pin(ctx)
-
 	// Store in thread-safe map for lock-free retrieval during callbacks
 	storeObserverContexts.Store(id, ctx)
-
-	// Set finalizer for cleanup - acts as safety net if user forgets to unregister
-	runtime.SetFinalizer(ctx, (*StoreObserverCallbackContext).finalize)
 
 	return id
 }
 
 // UnregisterStoreObserverCallback removes a callback from the registry.
 // Safety features:
-// - LoadAndDelete is atomic, preventing race conditions
-// - Proper cleanup unpins memory and clears resources
+// - Delete is atomic, preventing race conditions
 // - Safe to call multiple times (idempotent)
 func UnregisterStoreObserverCallback(id uintptr) {
-	// Atomic load and delete prevents races
-	if ctx, loaded := storeObserverContexts.LoadAndDelete(id); loaded {
-		if safeCtx, ok := ctx.(*StoreObserverCallbackContext); ok {
-			safeCtx.cleanup()
-		}
-	}
+	// Atomic delete prevents races
+	storeObserverContexts.Delete(id)
 }
 
 // GetStoreObserverContext retrieves a store observer callback context.
@@ -148,21 +125,6 @@ func GetStoreObserverContext(id uintptr) *StoreObserverCallbackContext {
 		}
 	}
 	return nil
-}
-
-// cleanup safely cleans up the context
-func (ctx *StoreObserverCallbackContext) cleanup() {
-	if ctx.active.CompareAndSwap(true, false) {
-		if ctx.pinner != nil {
-			ctx.pinner.Unpin()
-		}
-		runtime.SetFinalizer(ctx, nil)
-	}
-}
-
-// finalize is called by the garbage collector
-func (ctx *StoreObserverCallbackContext) finalize() {
-	ctx.cleanup()
 }
 
 // goStoreObserverCallback is called from C when an observer receives new data.
@@ -202,7 +164,8 @@ func goStoreObserverCallback(contextPtr unsafe.Pointer, resultPtr *C.dittoffi_qu
 	}
 
 	// Create a QueryResultHandle from the C pointer
-	handle := &QueryResultHandle{ptr: resultPtr}
+	handle := &QueryResultHandle{}
+	handle.Initialize(queryResultHandleFreer{ptr: resultPtr})
 
 	// Call the appropriate callback based on whether we have signal control
 	if ctx.callbackWithSignalNext != nil {
@@ -252,7 +215,21 @@ func goStoreObserverFree(contextPtr unsafe.Pointer) {
 func CreateStoreObserverCallback(callbackID uintptr) C.BoxDynFnMut2_void_dittoffi_query_result_ptr_ArcDynFn0_void_t {
 	// Pass the callback ID directly as unsafe.Pointer
 	// This works because uintptr can be safely cast to unsafe.Pointer for callback context
-	return C.create_store_observer_callback(unsafe.Pointer(callbackID))
+	return C.create_store_observer_callback(C.uintptr_t(callbackID))
+}
+
+// StoreObserverHandle wraps an observer
+type StoreObserverHandle struct {
+	HandleCleaner[storeObserverHandleFreer]
+	callbackID uintptr // Track the callback ID for cleanup
+}
+
+type storeObserverHandleFreer struct {
+	ptr *C.dittoffi_store_observer_t
+}
+
+func (i storeObserverHandleFreer) free() {
+	C.dittoffi_store_observer_free(i.ptr)
 }
 
 // StoreRegisterObserverThrows registers a store observer
@@ -303,10 +280,10 @@ func StoreRegisterObserverThrows(ditto *DittoHandle, query string, args map[stri
 		return nil, fmt.Errorf("observer registration returned nil")
 	}
 
-	return &StoreObserverHandle{
-		ptr:        result.success,
-		callbackID: callbackID,
-	}, nil
+	handle := &StoreObserverHandle{}
+	handle.Initialize(storeObserverHandleFreer{ptr: result.success})
+	handle.callbackID = callbackID
+	return handle, nil
 }
 
 // StoreRegisterObserverWithSignalNextThrows registers a store observer with signal control
@@ -357,27 +334,48 @@ func StoreRegisterObserverWithSignalNextThrows(ditto *DittoHandle, query string,
 		return nil, fmt.Errorf("observer registration returned nil")
 	}
 
-	return &StoreObserverHandle{
-		ptr:        result.success,
-		callbackID: callbackID,
-	}, nil
+	handle := &StoreObserverHandle{}
+	handle.Initialize(storeObserverHandleFreer{ptr: result.success})
+	handle.callbackID = callbackID
+	return handle, nil
+}
+
+func StoreObserverIsCancelled(handle *StoreObserverHandle) bool {
+	if handle == nil || handle.inner.ptr == nil {
+		return true
+	}
+	return bool(C.dittoffi_store_observer_is_cancelled(handle.inner.ptr))
+}
+
+func StoreObserverQueryString(handle *StoreObserverHandle) string {
+	if handle == nil || handle.inner.ptr == nil {
+		return ""
+	}
+	cStr := C.dittoffi_store_observer_query_string(handle.inner.ptr)
+	return stringFromFFI(cStr)
+}
+
+func StoreObserverQueryArguments(handle *StoreObserverHandle) []byte {
+	if handle == nil || handle.inner.ptr == nil {
+		return nil
+	}
+	cborSlice := C.dittoffi_store_observer_query_arguments_cbor(handle.inner.ptr)
+	cborBytes := bytesFromFFI(cborSlice)
+	return cborBytes
 }
 
 // CancelStoreObserver cancels a store observer
 func CancelStoreObserver(handle *StoreObserverHandle) {
 	ffiDebugTrace("CancelStoreObserver called")
-	if handle != nil && handle.ptr != nil {
-		C.dittoffi_store_observer_cancel(handle.ptr)
+	if handle != nil && handle.inner.ptr != nil {
+		C.dittoffi_store_observer_cancel(handle.inner.ptr)
 	}
 }
 
 // FreeStoreObserver frees an observer handle
 func FreeStoreObserver(handle *StoreObserverHandle) {
 	ffiDebugTrace("FreeStoreObserver called")
-	if handle != nil && handle.ptr != nil {
-		C.dittoffi_store_observer_free(handle.ptr)
-		handle.ptr = nil
-	}
+	handle.Free()
 }
 
 // StoreObservers returns all currently active store observers
@@ -401,12 +399,12 @@ func StoreObservers(ditto *DittoHandle) ([]*StoreObserverHandle, error) {
 
 	for i := 0; i < observerCount; i++ {
 		if cObservers[i] != nil {
-			observers[i] = &StoreObserverHandle{
-				ptr: cObservers[i],
-				// Note: We don't have the callback ID for these observers
-				// since they were registered elsewhere
-				callbackID: 0,
-			}
+			handle := &StoreObserverHandle{}
+			handle.Initialize(storeObserverHandleFreer{ptr: cObservers[i]})
+			// Note: We don't have the callback ID for these observers
+			// since they were registered elsewhere
+			handle.callbackID = 0
+			observers[i] = handle
 		}
 	}
 

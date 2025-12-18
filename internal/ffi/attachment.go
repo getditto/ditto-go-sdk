@@ -19,12 +19,12 @@ extern void goAttachmentRelease(void* context);
 static CancelTokenResult_t resolve_attachment(
     CDitto_t const * ditto,
     slice_ref_uint8_t id,
-    void * ctx
+    uintptr_t ctx
 ) {
 	return ditto_resolve_attachment(
 		ditto,
 		id,
-		ctx,
+		(void *)ctx,
 		goAttachmentRetain,
 		goAttachmentRelease,
 		goAttachmentOnComplete,
@@ -59,7 +59,7 @@ func ResolveAttachment(ditto *DittoHandle, attachmentID []byte, callbackID uintp
 	result = C.resolve_attachment(
 		ditto.load(),
 		idSlice,
-		unsafe.Pointer(callbackID), // ctx
+		C.uintptr_t(callbackID), // ctx
 	)
 
 	return &CancelTokenResult{
@@ -132,7 +132,8 @@ func goAttachmentOnComplete(contextPtr unsafe.Pointer, handlePtr *C.AttachmentHa
 	}
 
 	// Create an AttachmentHandle from the C pointer
-	handle := &AttachmentHandle{ptr: handlePtr}
+	handle := &AttachmentHandle{}
+	handle.Initialize(attachmentHandleFreer{ptr: handlePtr})
 	ctx.onComplete(handle)
 }
 
@@ -212,11 +213,19 @@ func goAttachmentRelease(contextPtr unsafe.Pointer) {
 
 // AttachmentHandle represents an attachment
 type AttachmentHandle struct {
+	HandleCleaner[attachmentHandleFreer]
+}
+
+type attachmentHandleFreer struct {
 	ptr *C.AttachmentHandle_t
 }
 
+func (a attachmentHandleFreer) free() {
+	C.ditto_free_attachment_handle(a.ptr)
+}
+
 func (h *AttachmentHandle) IsValid() bool {
-	return h != nil && h.ptr != nil
+	return h != nil && h.inner.ptr != nil
 }
 
 // Attachment represents attachment data
@@ -245,10 +254,12 @@ func NewAttachmentFromBytes(ditto *DittoHandle, data []byte) (*Attachment, error
 
 	idBytes := bytesFromFFI(cattachment.id)
 
+	handle := &AttachmentHandle{}
+	handle.Initialize(attachmentHandleFreer{ptr: cattachment.handle})
 	attachment := &Attachment{
 		ID:     idBytes,
 		Length: uint64(cattachment.len),
-		Handle: &AttachmentHandle{ptr: cattachment.handle},
+		Handle: handle,
 	}
 
 	return attachment, nil
@@ -280,10 +291,12 @@ func NewAttachmentFromFile(ditto *DittoHandle, path string, copyFile bool) (*Att
 
 	idBytes := bytesFromFFI(cattachment.id)
 
+	handle := &AttachmentHandle{}
+	handle.Initialize(attachmentHandleFreer{ptr: cattachment.handle})
 	attachment := &Attachment{
 		ID:     idBytes,
 		Length: uint64(cattachment.len),
-		Handle: &AttachmentHandle{ptr: cattachment.handle},
+		Handle: handle,
 	}
 
 	return attachment, nil
@@ -304,16 +317,9 @@ func GetAttachmentStatus(ditto *DittoHandle, id []byte) (*AttachmentHandle, erro
 	if result.handle == nil {
 		return nil, fmt.Errorf("attachment handle is nil")
 	}
-
-	return &AttachmentHandle{ptr: result.handle}, nil
-}
-
-// FreeAttachmentHandle frees an attachment handle
-func FreeAttachmentHandle(handle *AttachmentHandle) {
-	if handle != nil && handle.ptr != nil {
-		C.ditto_free_attachment_handle(handle.ptr)
-		handle.ptr = nil
-	}
+	handle := &AttachmentHandle{}
+	handle.Initialize(attachmentHandleFreer{ptr: result.handle})
+	return handle, nil
 }
 
 // AttachmentFetchCallback represents callback functions for attachment fetching
@@ -336,7 +342,7 @@ func GetCompleteAttachmentPath(ditto *DittoHandle, handle *AttachmentHandle) (st
 	}
 
 	// Call FFI function to get path
-	cStr := C.ditto_get_complete_attachment_path(ditto.load(), handle.ptr)
+	cStr := C.ditto_get_complete_attachment_path(ditto.load(), handle.inner.ptr)
 	if cStr == nil {
 		return "", fmt.Errorf("attachment path not available")
 	}
@@ -352,7 +358,7 @@ func GetCompleteAttachmentData(ditto *DittoHandle, handle *AttachmentHandle) ([]
 	}
 
 	// Call FFI function to get data
-	result := C.ditto_get_complete_attachment_data(ditto.load(), handle.ptr)
+	result := C.ditto_get_complete_attachment_data(ditto.load(), handle.inner.ptr)
 
 	// Check for errors
 	if result.status != 0 {

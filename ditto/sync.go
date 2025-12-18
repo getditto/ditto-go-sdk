@@ -79,9 +79,15 @@ func (s *Sync) Subscriptions() []*SyncSubscription {
 }
 
 // removeSubscription removes a subscription from the sync's internal list.
-// This is called internally when a subscription is cancelled.
+// This is called internally when a subscription is canceled.
 func (s *Sync) removeSubscription(subscription *SyncSubscription) {
-	sdkDebugTraceF("gosdk: Sync.removeSubscription(); id=%s; query=%s", subscription.id, subscription.query)
+	if enableSDKDebugTrace {
+		query := subscription.QueryString()
+		if query == "" {
+			query = "(unknown/canceled)"
+		}
+		sdkDebugTraceF("gosdk: Sync.removeSubscription(); id=%s; query=%s", subscription.id, query)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

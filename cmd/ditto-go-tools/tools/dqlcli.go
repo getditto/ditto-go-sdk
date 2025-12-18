@@ -111,7 +111,7 @@ func DoDQLInterpreter(ctx context.Context, config *Config) error {
 
 	// Clean up subscriptions before exiting
 	if count := repl.unsubscribe(); count > 0 {
-		pterm.Info.Printf("Cancelled %d subscription(s)\n", count)
+		pterm.Info.Printf("Canceled %d subscription(s)\n", count)
 	}
 
 	pterm.Info.Println("Goodbye!")
@@ -573,7 +573,7 @@ func (repl *DQLCommandProcessor) cmdUnsubscribe(_ string) error {
 		return nil
 	}
 
-	pterm.Success.Printf("✓ Cancelled %d subscription(s)\n", count)
+	pterm.Success.Printf("✓ Canceled %d subscription(s)\n", count)
 	return nil
 }
 

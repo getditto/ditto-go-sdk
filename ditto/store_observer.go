@@ -5,6 +5,7 @@ package ditto
 import (
 	"sync"
 
+	"github.com/getditto/ditto-go-sdk/v5/internal/cbor"
 	"github.com/getditto/ditto-go-sdk/v5/internal/ffi"
 )
 
@@ -57,15 +58,9 @@ type StoreObservationHandlerWithSignalNext func(*QueryResult, SignalNext)
 // Thread Safety:
 // All StoreObserver methods are thread-safe.
 type StoreObserver struct {
-	mu                     sync.Mutex
-	store                  *Store
-	handle                 *ffi.StoreObserverHandle
-	query                  string
-	queryArgs              map[string]any
-	callback               StoreObservationHandler
-	callbackWithSignalNext StoreObservationHandlerWithSignalNext
-	callbackID             uintptr
-	canceled               bool
+	mu     sync.Mutex
+	ditto  *Ditto
+	handle *ffi.StoreObserverHandle
 }
 
 // Cancel stops the observer and releases its resources.
@@ -77,16 +72,20 @@ type StoreObserver struct {
 // It's recommended to call Cancel when the observer is no longer needed
 // to free resources and prevent unnecessary processing.
 func (o *StoreObserver) Cancel() {
-	sdkDebugTraceF("gosdk: StoreObserver.Cancel(); query: %s", o.query)
+	if enableSDKDebugTrace {
+		query := o.QueryString()
+		if query == "" {
+			query = "(unknown/canceled)"
+		}
+		sdkDebugTraceF("gosdk: StoreObserver.Cancel(); query: %s", query)
+	}
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if o.canceled {
+	if o.IsCanceled() {
 		return
 	}
-
-	o.canceled = true
 
 	// Cancel FFI observer
 	if o.handle != nil {
@@ -98,7 +97,7 @@ func (o *StoreObserver) Cancel() {
 
 // Ditto returns the Ditto instance that this store observer is registered with
 func (o *StoreObserver) Ditto() *Ditto {
-	return o.store.ditto
+	return o.ditto
 }
 
 // QueryString returns the DQL query string for this observer.
@@ -107,7 +106,7 @@ func (o *StoreObserver) Ditto() *Ditto {
 // The query string is immutable and does not change during the observer's
 // lifetime.
 func (o *StoreObserver) QueryString() string {
-	return o.query
+	return ffi.StoreObserverQueryString(o.handle)
 }
 
 // QueryArguments returns the query arguments for this observer.
@@ -115,8 +114,14 @@ func (o *StoreObserver) QueryString() string {
 // Returns the map of named parameters that was provided when the observer
 // was registered. The returned map is a copy and modifications to it do
 // not affect the observer.
-func (o *StoreObserver) QueryArguments() map[string]any {
-	return o.queryArgs
+func (o *StoreObserver) QueryArguments() QueryArguments {
+	cborBytes := ffi.StoreObserverQueryArguments(o.handle)
+	result, err := cbor.DecodeToMap(cborBytes)
+	if err != nil {
+		LogErrorF("failed to decode observer query arguments: %v", err)
+		return nil
+	}
+	return result
 }
 
 // IsCanceled returns true if the observer has been canceled.
@@ -127,7 +132,5 @@ func (o *StoreObserver) QueryArguments() map[string]any {
 //   - The owning Store was closed
 //   - The Ditto instance was shut down
 func (o *StoreObserver) IsCanceled() bool {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.canceled
+	return ffi.StoreObserverIsCancelled(o.handle)
 }
