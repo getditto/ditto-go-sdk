@@ -47,6 +47,9 @@ typedef struct Opaque__str Opaque__str_t;
 /** <No documentation available> */
 #define DITTOFFI_TRANSPORTS_WIFI_AWARE_RECENT_ERROR_DURATION_MS_NAME "transports_wifi_aware_max_recent_error_duration_ms"
 
+/** <No documentation available> */
+#define DITTOFFI_TRANSPORTS_WIFI_AWARE_WIFI_SUBSYSTEM_RESET_ENABLED_NAME "transports_wifi_aware_enable_wifi_subsystem_reset_enabled"
+
 /** \brief
  *  This enum contains all the Ditto types exposed publicly. The IDs **MUST**
  *  not be modified otherwise this would break the type conversions.
@@ -2816,7 +2819,8 @@ void
     char const * announce_string,
     uint32_t scope_id,
     char const * peer_host_address,
-    uint16_t port);
+    uint16_t port,
+    int32_t protocol);
 
 /** \brief
  *  The platform advises Rust that a peer has been identified.
@@ -3068,6 +3072,74 @@ char *
     Base64PaddingMode_t padding_mode);
 
 /** \brief
+ *  A slice of bytes optimized for sharing ownership of it and its subslices.
+ *
+ *  Typically, [`Bytes`] can constructed from `&'static [u8]`, `Arc<[u8]>` or `Arc<T: AsRef<[u8]>>`.
+ *
+ *  [`Bytes`] can also "inline" small enough slices: that is, if the slice is more than one byte
+ *  smaller than [`Bytes`] memory layout (which is 40 bytes on 64bit architectures), it may be store
+ *  directly in that memory instead of through indirection.
+ */
+typedef struct Bytes {
+    /** \brief
+     *  The start of the slice.
+     */
+    uint8_t const * start;
+
+    /** \brief
+     *  The length of the slice.
+     */
+    size_t len;
+
+    /** \brief
+     *  The owner of the slice, see [`Bytes::from_raw_parts`] for details.
+     */
+    void const * owner;
+
+    /** \brief
+     *  Named after the field often stored in it, but without actual semantics,
+     *  `capacity` is essentially just addtional memory for `owner` which may sometimes
+     *  require 2 words to be stored without reallocating. See [`Bytes::from_raw_parts`] for
+     *  details.
+     */
+    size_t capacity;
+
+    /** \brief
+     *  If properly aligned (i.e. least significant bit unset), a pointer to an instance of
+     *  [`BytesVt`].
+     *
+     *  If not, the slice is actually inlined in [`Bytes`]'s memory: the least significant byte of
+     *  `vtable` then is `(length << 1) | 1`, and the data starts at the address of this
+     *  instance of [`Bytes`].
+     */
+    uint8_t * vtable;
+} Bytes_t;
+
+/** \brief
+ *  Converts a `Bytes` object into a slice.
+ */
+slice_ref_uint8_t
+/* fn */ dittoffi_bytes_as_slice (
+    Bytes_t const * bytes);
+
+/** \brief
+ *  Clones a `Bytes` object.
+ */
+Bytes_t
+/* fn */ dittoffi_bytes_clone (
+    Bytes_t const * bytes);
+
+/** \brief
+ *  Copies a slice into a `Bytes` object.
+ *
+ *  todo(p-avital): A `dittoffi_bytes_retain_raw()` function should eventually be added to
+ *  minimize copies.
+ */
+Bytes_t
+/* fn */ dittoffi_bytes_copied_from_slice (
+    slice_ref_uint8_t slice);
+
+/** \brief
  *  Takes a [`c_slice::Box<u8>`] and wraps it in a [`repr_c::Box`].
  *
  *  This is exposed for the Flutter SDK, which has the following requirements:
@@ -3097,6 +3169,15 @@ slice_boxed_uint8_t *
 void
 /* fn */ dittoffi_bytes_double_boxed_byte_slice_free (
     slice_boxed_uint8_t * boxed);
+
+/** \brief
+ *  Destroys a `Bytes` object.
+ *
+ *  Note that this function does not attempt to free the `bytes` pointer.
+ */
+void
+/* fn */ dittoffi_bytes_drop (
+    Bytes_t * bytes);
 
 /** \brief
  *  The ditto error type, opaque.
@@ -3389,6 +3470,27 @@ slice_boxed_uint8_t
  */
 slice_boxed_uint8_t
 /* fn */ dittoffi_ditto_config_default (void);
+
+/** <No documentation available> */
+typedef struct dittoffi_result_bool {
+    /** \brief
+     *  Non-`NULL` pointer to opaque object on error, `NULL` otherwise.
+     */
+    dittoffi_error_t * error;
+
+    /** \brief
+     *  When no error occurred, the success value payload can be retrieved here.
+     *
+     *  Otherwise, the value is to be ignored.
+     */
+    bool success;
+} dittoffi_result_bool_t;
+
+/** <No documentation available> */
+dittoffi_result_bool_t
+/* fn */ dittoffi_ditto_get_system_parameter_bool (
+    CDitto_t const * ditto,
+    char const * parameter_name);
 
 /** <No documentation available> */
 typedef struct dittoffi_result_uint64 {
@@ -3879,6 +3981,709 @@ DittoErrorCode_t
 /* fn */ dittoffi_error_internal_get_legacy_error_code (
     dittoffi_error_t const * error);
 
+/** <No documentation available> */
+typedef struct Erased Erased_t;
+
+typedef struct {
+    uint8_t idx[15];
+} uint8_15_array_t;
+
+/** \brief
+ *  A generalization of TCP/UDP's concept of "port", topics identify a Stream's purpose.
+ *
+ *  Topics MUST be ASCII strings, restricted to the following regex: `^[a-zA-Z0-9_ ]{1,15}$`.
+ *
+ *  ```
+ *  # use std::{convert::TryFrom, str::FromStr};
+ *  # use dittolive_ditto_base::bus::Topic;
+ *  assert!(Topic::new(b"").is_none());
+ *  Topic::try_from("a").unwrap();
+ *  let _: Topic = "a".parse().unwrap();
+ *  Topic::try_from(b"b").unwrap();
+ *  Topic::try_from("topic is too long").unwrap_err();
+ *  Topic::try_from("invalid.").unwrap_err();
+ *  let s = "Hi there";
+ *  assert_eq!(Topic::try_from(s).unwrap().as_str(), s);
+ *  ```
+ */
+typedef struct Topic {
+    /** <No documentation available> */
+    uint8_t len;
+
+    /** <No documentation available> */
+    uint8_15_array_t buffer;
+} Topic_t;
+
+/** \brief
+ *  Requested reliability level for a message to be transmitted to another peer.
+ */
+/** \remark Has the same ABI as `uint8_t` **/
+#ifdef DOXYGEN
+typedef
+#endif
+enum Reliability {
+    /** \brief
+     *  No guarantees of successful delivery, ordering, or once-only delivery
+     */
+    RELIABILITY_UNRELIABLE,
+    /** \brief
+     *  Every message will be delivered in order or else the connection fails
+     */
+    RELIABILITY_RELIABLE,
+}
+#ifndef DOXYGEN
+; typedef uint8_t
+#endif
+Reliability_t;
+
+/** <No documentation available> */
+typedef struct IAcceptorVTable {
+    /** <No documentation available> */
+    void (*release_vptr)(Erased_t *);
+
+    /** <No documentation available> */
+    Erased_t * (*retain_vptr)(Erased_t const *);
+
+    /** <No documentation available> */
+    Topic_t (*topic)(Erased_t const *);
+
+    /** <No documentation available> */
+    Reliability_t (*reliability)(Erased_t const *);
+} IAcceptorVTable_t;
+
+/** <No documentation available> */
+typedef struct VirtualPtr__Erased_ptr_IAcceptorVTable {
+    /** <No documentation available> */
+    Erased_t * ptr;
+
+    /** <No documentation available> */
+    IAcceptorVTable_t vtable;
+} VirtualPtr__Erased_ptr_IAcceptorVTable_t;
+
+/** <No documentation available> */
+typedef struct Acceptor {
+    /** <No documentation available> */
+    VirtualPtr__Erased_ptr_IAcceptorVTable_t inner;
+} Acceptor_t;
+
+/** \brief
+ *  A safer-ffi friendly equivalent layout to [`ConnectionResult`].
+ */
+typedef struct BindResult_Layout {
+    /** \brief
+     *  `true` if accepted, `false` if rejected.
+     */
+    bool ok;
+
+    /** \brief
+     *  Initialized if `accepted` is `true`
+     *  if not, must be a valid [`BindError`] instead.
+     */
+    Acceptor_t acceptor;
+} BindResult_Layout_t;
+
+typedef struct {
+    void const * idx[2];
+} void_const_ptr_2_array_t;
+
+/** \brief
+ *  The reason for a connection attempt's failure.
+ */
+/** \remark Has the same ABI as `uint8_t` **/
+#ifdef DOXYGEN
+typedef
+#endif
+enum CancellationError {
+    /** \brief
+     *  Cancelling the send operation failed.
+     */
+    CANCELLATION_ERROR_CANCELLATION_FAILED,
+}
+#ifndef DOXYGEN
+; typedef uint8_t
+#endif
+CancellationError_t;
+
+/** \brief
+ *  A safer-ffi friendly equivalent layout to [`CancellationResult`].
+ */
+typedef struct CancellationResult_Layout {
+    /** \brief
+     *  `true` if cancelling succeeded, `false` otherwise.
+     */
+    bool success;
+
+    /** \brief
+     *  Initialized iff `accepted` is `true`,
+     *  if not, must be a valid [`CancellationError`] instead
+     */
+    CancellationError_t error_reason;
+} CancellationResult_Layout_t;
+
+/** \brief
+ *  Indicates the status of a given send operation.
+ *
+ *  A [`SendHandle`]'s state may become [`Unknown`](SendStatus::Unknown) at any time,
+ *  but may never return to another state after that.
+ *
+ *  Transition details:
+ *  - `Pending -> Sent`: Trivial, each state is technically allowed to represent the other.
+ *  - `Pending -> Failed`: This likely indicates that the stream has been closed before the message
+ *  could be sent. This may be due to a network issue or simply your peer closing the stream on
+ *  their end.
+ *  - `Pending` -> `Cancelled`: This indicates that the send operation was cancelled, although it
+ *  does not guarantee that the peer will never receive the cancelled message.
+ */
+/** \remark Has the same ABI as `uint8_t` **/
+#ifdef DOXYGEN
+typedef
+#endif
+enum SendStatus {
+    /** \brief
+     *  The send status couldn't be recovered.
+     *
+     *  Transition to this state may happen from any state (including "final" states),
+     *  as the status may stop being tracked.
+     */
+    SEND_STATUS_UNKNOWN = 0,
+    /** \brief
+     *  The send operation is still pending.
+     *
+     *  Note this doesn't guarantee that the message _hasn't_ been sent or acknowledged yet,
+     *  just that the handle wasn't able to confirm that either of these states has been
+     *  reached.
+     */
+    SEND_STATUS_PENDING = 1,
+    /** \brief
+     *  The send operation has been executed, but no acknowledgement has been received by the
+     *  handle.
+     */
+    SEND_STATUS_SENT = 2,
+    /** \brief
+     *  The send was identified as having failed.
+     *
+     *  This typically would happen if the target disconnected before reaching one of the other end
+     *  states.
+     */
+    SEND_STATUS_FAILED = 3,
+    /** \brief
+     *  The send was cancelled.
+     *
+     *  Note that this does not guarantee that the message won't be delivered, even if it hadn't
+     *  been sent yet.
+     */
+    SEND_STATUS_CANCELLED = 4,
+}
+#ifndef DOXYGEN
+; typedef uint8_t
+#endif
+SendStatus_t;
+
+/** \brief
+ *  `Box<dyn 'static + Send + FnMut(A1) -> Ret>`
+ */
+typedef struct BoxDynFnMut1_void_SendStatus {
+    /** <No documentation available> */
+    void * env_ptr;
+
+    /** <No documentation available> */
+    void (*call)(void *, SendStatus_t);
+
+    /** <No documentation available> */
+    void (*free)(void *);
+} BoxDynFnMut1_void_SendStatus_t;
+
+/** <No documentation available> */
+typedef struct ISendHandleVTable {
+    /** <No documentation available> */
+    void (*release_vptr)(Erased_t *);
+
+    /** <No documentation available> */
+    Erased_t * (*retain_vptr)(Erased_t const *);
+
+    /** \brief
+     *  Attempts to cancel the send operation, returning the payload of the message once the
+     *  cancellation succeeds.
+     *
+     *  This cancellation may fail to cancel the operation, even if the message is still in a
+     *  send queue.
+     *
+     *  If a continuation has been passed to `Self::then`, and hasn't been called yet, it _must_ be
+     *  called with the current result of `Self::poll`.
+     */
+    CancellationResult_Layout_t (*cancel)(Erased_t const *);
+
+    /** \brief
+     *  Returns the current status of the operation.
+     *
+     *  Note that consistency isn't guaranteed: calling `poll` after `then` may yield a
+     *  different result than that yielded to the continuation. In such a case, the
+     *  continuation's argument is considered "canon".
+     */
+    SendStatus_t (*poll)(Erased_t const *);
+
+    /** \brief
+     *  Calls the `callback` when the send status changes.
+     *
+     *  Previously set callbacks MUST:
+     *  - Never be called upon a change in the [`SendStatus`] if `keep_previous == false` once this
+     *  method returns.
+     *  - Also be called upon a change in the [`SendStatus`] if `keep_previous == true`, without any
+     *  call order being specified.
+     */
+    void (*set_on_change)(Erased_t const *, BoxDynFnMut1_void_SendStatus_t, bool);
+} ISendHandleVTable_t;
+
+/** <No documentation available> */
+typedef struct VirtualPtr__Erased_ptr_ISendHandleVTable {
+    /** <No documentation available> */
+    Erased_t * ptr;
+
+    /** <No documentation available> */
+    ISendHandleVTable_t vtable;
+} VirtualPtr__Erased_ptr_ISendHandleVTable_t;
+
+/** \brief
+ *  Identifies whether the stream was closed locally or remotely.
+ */
+/** \remark Has the same ABI as `uint8_t` **/
+#ifdef DOXYGEN
+typedef
+#endif
+enum StreamStatus {
+    /** \brief
+     *  The stream is open
+     */
+    STREAM_STATUS_OPEN,
+    /** \brief
+     *  The stream was closed by the remote peer.
+     */
+    STREAM_STATUS_CLOSED_BY_REMOTE,
+    /** \brief
+     *  The stream was closed by the locally.
+     */
+    STREAM_STATUS_CLOSED_BY_LOCAL,
+}
+#ifndef DOXYGEN
+; typedef uint8_t
+#endif
+StreamStatus_t;
+
+/** \brief
+ *  `Box<dyn 'static + Send + FnMut(A1) -> Ret>`
+ */
+typedef struct BoxDynFnMut1_void_StreamStatus {
+    /** <No documentation available> */
+    void * env_ptr;
+
+    /** <No documentation available> */
+    void (*call)(void *, StreamStatus_t);
+
+    /** <No documentation available> */
+    void (*free)(void *);
+} BoxDynFnMut1_void_StreamStatus_t;
+
+/** <No documentation available> */
+typedef struct IStreamVTable {
+    /** <No documentation available> */
+    void (*release_vptr)(Erased_t *);
+
+    /** <No documentation available> */
+    Erased_t * (*retain_vptr)(Erased_t const *);
+
+    /** \brief
+     *  The peer with which the stream is/will be connected.
+     */
+    void_const_ptr_2_array_t (*peer_pubkey)(Erased_t const *);
+
+    /** \brief
+     *  The topic of the stream.
+     *
+     *  The return value _may_ alias `self`. You can ensure it's fully owned by calling
+     *  [`Bytes::upgrade`](safer_ffi::bytes::Bytes::upgrade) which will copy only if necessary.
+     */
+    Topic_t (*topic)(Erased_t const *);
+
+    /** \brief
+     *  Send a payload.
+     *
+     *  The returned SendHandle can be used to cancel the send (provided it hasn't already been
+     *  delivered). `finished` is called once the send is considered complete
+     *  (immediately for unreliable streams, upon ACK otherwise). If the send failed
+     *  (only allowed for cancelations), the payload
+     */
+    VirtualPtr__Erased_ptr_ISendHandleVTable_t (*send)(Erased_t const *, Bytes_t);
+
+    /** \brief
+     *  Returns the stream's closer if the stream was indeed closed.
+     */
+    StreamStatus_t (*current_status)(Erased_t const *);
+
+    /** \brief
+     *  Adds a `continuation` on the stream's closure.
+     *
+     *  All continuations added to the stream's closure will be called once it is closed.
+     *
+     *  The `continuation` is guaranteed to be called if the stream was already closed.
+     */
+    void (*add_on_close)(Erased_t const *, BoxDynFnMut1_void_StreamStatus_t);
+
+    /** \brief
+     *  Returns the maximum size of a payload that can be sent on this stream.
+     *
+     *  This may be 0 if the stream has been closed.
+     *
+     *  Note that a stream may receive messages larger than this size.
+     */
+    size_t (*max_send_size)(Erased_t const *);
+
+    /** \brief
+     *  Returns a hash of the candidate's type ID, allowing internal code to identify the candidate
+     *  type and downcast it if necessary.
+     *
+     *  There's never any point in using it outside of Ditto's codebase.
+     */
+    uint64_t (*type_id)(Erased_t const *);
+} IStreamVTable_t;
+
+/** <No documentation available> */
+typedef struct VirtualPtr__Erased_ptr_IStreamVTable {
+    /** <No documentation available> */
+    Erased_t * ptr;
+
+    /** <No documentation available> */
+    IStreamVTable_t vtable;
+} VirtualPtr__Erased_ptr_IStreamVTable_t;
+
+/** \brief
+ *  An open, bidirectional stream.
+ */
+typedef struct Stream {
+    /** <No documentation available> */
+    VirtualPtr__Erased_ptr_IStreamVTable_t inner;
+} Stream_t;
+
+/** \brief
+ *  Simplified for lighter documentation, but the actual impls
+ *  range from `Tuple1` up to `Tuple6`.
+ */
+typedef struct Tuple2_bool_Stream {
+    /** <No documentation available> */
+    bool _0;
+
+    /** <No documentation available> */
+    Stream_t _1;
+} Tuple2_bool_Stream_t;
+
+/** \brief
+ *  An inbound message.
+ *
+ *  Inbound messages currently only contain the message's payload, but metadata may be added future
+ *  updates.
+ */
+typedef struct Inbound {
+    /** <No documentation available> */
+    Bytes_t payload;
+} Inbound_t;
+
+/** \brief
+ *  `Box<dyn 'static + Send + FnMut(A1) -> Ret>`
+ */
+typedef struct BoxDynFnMut1_void_Inbound {
+    /** <No documentation available> */
+    void * env_ptr;
+
+    /** <No documentation available> */
+    void (*call)(void *, Inbound_t);
+
+    /** <No documentation available> */
+    void (*free)(void *);
+} BoxDynFnMut1_void_Inbound_t;
+
+/** \brief
+ *  Simplified for lighter documentation, but the actual impls
+ *  range from `Tuple1` up to `Tuple6`.
+ */
+typedef struct Tuple2_bool_BoxDynFnMut1_void_Inbound {
+    /** <No documentation available> */
+    bool _0;
+
+    /** <No documentation available> */
+    BoxDynFnMut1_void_Inbound_t _1;
+} Tuple2_bool_BoxDynFnMut1_void_Inbound_t;
+
+/** <No documentation available> */
+typedef struct IStreamCandidateVTable {
+    /** <No documentation available> */
+    void (*release_vptr)(Erased_t *);
+
+    /** <No documentation available> */
+    Erased_t * (*retain_vptr)(Erased_t const *);
+
+    /** \brief
+     *  The peer with which the stream is/will be connected.
+     */
+    void_const_ptr_2_array_t (*peer_pubkey)(Erased_t const *);
+
+    /** \brief
+     *  The topic of the stream.
+     *
+     *  The return value _may_ alias `self`. You can ensure it's fully owned by calling
+     *  [`Bytes::upgrade`](safer_ffi::bytes::Bytes::upgrade) which will copy only if necessary.
+     */
+    Topic_t (*topic)(Erased_t const *);
+
+    /** \brief
+     *  Confirms the stream's opening, setting its optional callback.
+     *
+     *  Failing to call this before the candidate is destroyed will close the connection.
+     */
+    Tuple2_bool_Stream_t (*open)(Erased_t const *, Tuple2_bool_BoxDynFnMut1_void_Inbound_t);
+
+    /** \brief
+     *  Returns a hash of the candidate's type ID, allowing internal code to identify the candidate
+     *  type and downcast it if necessary.
+     *
+     *  There's never any point in using it outside of Ditto's codebase.
+     */
+    uint64_t (*type_id)(Erased_t const *);
+} IStreamCandidateVTable_t;
+
+/** <No documentation available> */
+typedef struct VirtualPtr__Erased_ptr_IStreamCandidateVTable {
+    /** <No documentation available> */
+    Erased_t * ptr;
+
+    /** <No documentation available> */
+    IStreamCandidateVTable_t vtable;
+} VirtualPtr__Erased_ptr_IStreamCandidateVTable_t;
+
+/** \brief
+ *  Before a [`Stream`] can be fully open, its receive callback must be set through
+ *  [`StreamCandidate::open`] or [`StreamCandidate::open_write_only`].
+ *
+ *  If a [`StreamCandidate`] is dropped before it is fully open, the underlying [`Stream`] will
+ *  be closed, notifying the remote peer.
+ *
+ *  Moreover, an [`Acceptor`] may wait for its yielded [`StreamCandidate`] to be opened before
+ *  notifying the connecting peer of its acceptance, preventing the opposing `ConnectionFuture`
+ *  from resolving.
+ *
+ *  Note that `ConnectionBuilder` and `AcceptorBuilder`, which are the only sources of
+ *  [`StreamCandidate`]s, both have a `on_receive_factory` method: this method allows you to set a
+ *  common policy for [`StreamCandidate::open`]ing the [`Stream`], which is generally more
+ *  convenient and may spare you some head-scratching with regard to the above note on
+ *  `ConnectionFuture`'s resolution.
+ */
+typedef struct StreamCandidate {
+    /** <No documentation available> */
+    VirtualPtr__Erased_ptr_IStreamCandidateVTable_t inner;
+} StreamCandidate_t;
+
+/** \brief
+ *  `Arc<dyn Send + Sync + Fn(A1) -> Ret>`
+ */
+typedef struct ArcDynFn1_void_StreamCandidate {
+    /** <No documentation available> */
+    void * env_ptr;
+
+    /** <No documentation available> */
+    void (*call)(void *, StreamCandidate_t);
+
+    /** <No documentation available> */
+    void (*release)(void *);
+
+    /** <No documentation available> */
+    void (*retain)(void *);
+} ArcDynFn1_void_StreamCandidate_t;
+
+/** <No documentation available> */
+typedef struct IConnectionHandleVTable {
+    /** <No documentation available> */
+    void (*release_vptr)(Erased_t *);
+
+    /** <No documentation available> */
+    Erased_t * (*retain_vptr)(Erased_t const *);
+
+    /** \brief
+     *  Attempts to cancel the connection attempt.
+     *
+     *  If the connection attempt has already succeeded or failed, this does nothing.
+     */
+    void (*cancel)(Erased_t const *);
+} IConnectionHandleVTable_t;
+
+/** <No documentation available> */
+typedef struct VirtualPtr__Erased_ptr_IConnectionHandleVTable {
+    /** <No documentation available> */
+    Erased_t * ptr;
+
+    /** <No documentation available> */
+    IConnectionHandleVTable_t vtable;
+} VirtualPtr__Erased_ptr_IConnectionHandleVTable_t;
+
+/** \brief
+ *  A handle on a connection attempt, that will attempt to cancel said attempt if dropped.
+ *
+ *  Note that cancelling a connection attempt that has already succeeded will have no effect.
+ */
+typedef struct ConnectionHandle {
+    /** <No documentation available> */
+    VirtualPtr__Erased_ptr_IConnectionHandleVTable_t inner;
+} ConnectionHandle_t;
+
+/** \brief
+ *  A safer-ffi friendly equivalent layout to [`ConnectionResult`].
+ */
+typedef struct ConnectionResult_Layout {
+    /** \brief
+     *  `true` if accepted, `false` if rejected.
+     */
+    bool accepted;
+
+    /** \brief
+     *  Initialized if `accepted` is `true`
+     *  if not, must be a valid [`ConnectionError`] instead
+     */
+    StreamCandidate_t stream;
+} ConnectionResult_Layout_t;
+
+/** \brief
+ *  `Box<dyn 'static + Send + FnMut(A1) -> Ret>`
+ */
+typedef struct BoxDynFnMut1_void_ConnectionResult_Layout {
+    /** <No documentation available> */
+    void * env_ptr;
+
+    /** <No documentation available> */
+    void (*call)(void *, ConnectionResult_Layout_t);
+
+    /** <No documentation available> */
+    void (*free)(void *);
+} BoxDynFnMut1_void_ConnectionResult_Layout_t;
+
+/** <No documentation available> */
+typedef struct IBusVTable {
+    /** <No documentation available> */
+    void (*release_vptr)(Erased_t *);
+
+    /** <No documentation available> */
+    Erased_t * (*retain_vptr)(Erased_t const *);
+
+    /** \brief
+     *  Binds a callback to a new topic.
+     */
+    BindResult_Layout_t (*bind_topic)(Erased_t const *, slice_ref_uint8_t, Reliability_t, ArcDynFn1_void_StreamCandidate_t);
+
+    /** \brief
+     *  Attempts to establish a connection, yielding a connection result once done.
+     */
+    ConnectionHandle_t (*connect)(Erased_t const *, void_const_ptr_2_array_t, slice_ref_uint8_t, Reliability_t, bool, BoxDynFnMut1_void_ConnectionResult_Layout_t, uint32_t);
+
+    /** \brief
+     *  Returns a hash of the bus's type ID, allowing internal code to identify the bus type and
+     *  downcast it if necessary.
+     *
+     *  There's never any point in using it outside of Ditto's codebase.
+     */
+    uint64_t (*type_id)(Erased_t const *);
+} IBusVTable_t;
+
+/** <No documentation available> */
+typedef struct VirtualPtr__Erased_ptr_IBusVTable {
+    /** <No documentation available> */
+    Erased_t * ptr;
+
+    /** <No documentation available> */
+    IBusVTable_t vtable;
+} VirtualPtr__Erased_ptr_IBusVTable_t;
+
+/** \brief
+ *  # Ditto Data Streams
+ *  Ditto Data Streams allow you to send datagrams across a Ditto mesh.
+ *
+ *  This structure is the core accessor to the Ditto Data Streams, which may remind you of some TCP
+ *  APIs you've seen before (except this one can work without an IP connection too!).
+ *
+ *  While exploring the API from [`Bus::bind_topic`], [`Bus::connect`] and the examples their docs
+ *  contain is probably the easiest way to approach it, there are a few subjects that are global to
+ *  the API: giving them a look could be helpful.
+ *
+ *  The entire API is built around the builder pattern: a rather convenient way to explore it is to
+ *  simply let your code completion guide you around it.
+ *
+ *  ## Topics
+ *  Much like TCP and UDP have ports, Ditto Data Streams have `topic`s: instead of integers, you can
+ *  name your ports after anything you like!
+ *
+ *  The equivalent of binding a socket is to use [`Bus::bind_topic`], to which you'll provide a
+ *  topic (or name).
+ *
+ *  Any attempt to [`Bus::connect`] to your peer will have to specify on which topic the connection
+ *  should be made, the connection appearing as a new [`Stream`] for your [`Acceptor`].
+ *
+ *  ## [`Payload`] and [`IntoPayload`]
+ *  To carry data around, the Ditto Data Streams API uses [`Payload`]s, also known as
+ *  [`safer_ffi::bytes::Bytes`]: much like the wider known [`bytes::Bytes`](https://docs.rs/bytes/latest/bytes/struct.Bytes.html), it's a cheaply cloneable and sliceable chunk of contiguous memory... But it does have a few low-level tricks up its sleeve to be even more efficient.
+ *
+ *  And while it's easy enough to construct it from common owned slice types, [`IntoPayload`] is a
+ *  very friendly option to make serialization less verbose, yet explicit and flexible.
+ *
+ *  ## [`IntoChannel`]: We promise, it's not as scary as it looks
+ *  In this API, anytime we think you may want the choice between closures and channels to handle
+ *  certain events you could subscribe to, we've used the following signature pattern:
+ *  ```
+ *  # mod dittolive_ditto {
+ *  #   pub mod experimental {
+ *  #       pub use dittolive_ditto_base::*;
+ *  #   }
+ *  # }
+ *  # use dittolive_ditto::experimental::bus::{Channel, IntoChannel};
+ *  # struct Event; struct Subscriber<T>(T);
+ *  fn subscribe<OverloadId, Handler>(handler: Handler) -> Subscriber<Handler::Receiver>
+ *  where
+ *  Handler: IntoChannel<OverloadId, Event>,
+ *  Handler::Sender: Channel<OverloadId, Event>,
+ *  # {unimplemented!()}
+ *  ```
+ *
+ *  While this looks imposing, it's actually a very magic formula: it allows you to write little to
+ *  no boiler plate in 99% of cases, while giving you the flexibility to use any handler you please
+ *  and allowing us to find every trick possible to minimize the overhead of calling your handler.
+ *
+ *  In most cases, all you need to do to use such an API is to call it with
+ *  - a closure: `let handle = subscribe(|e: Event| println!("{e}"));` (you may want to keep
+ *  `handle` around, as dropping it will cancel that subscription).
+ *  - any channel implementation you like: `let handle = subscribe(std::sync::mpsc::channel())`
+ *  (here, `handle` will deref to the receiver half of the channel, letting you call
+ *  `handle.recv()` whenever you like).
+ *
+ *  `OverloadId` is actually a charm that tricks the compiler into letting you bypass the orphan
+ *  rule<sup>[(1)](https://doc.rust-lang.org/book/ch10-02-traits.html#:~:text=orphan%20rule)[(2)](https://github.com/Ixrec/rust-orphan-rules)</sup>, and is described in more detail in [`IntoChannel`]'s documentation, which also contains an
+ *  example of how to use that trick to add support for [`flume`](https://crates.io/crates/flume)'s excellent channel implementation
+ *  to Ditto's Data Streams API.
+ */
+typedef struct Bus {
+    /** <No documentation available> */
+    VirtualPtr__Erased_ptr_IBusVTable_t inner;
+} Bus_t;
+
+/** \brief
+ *  Returns a handle to the experimental bus, initializing it if necessary.
+ *
+ *  This function is guaranteed to panic unless the shared library was compiled with the
+ *  `ditto_external_experimental_bus` configuration option set to `true`.
+ *
+ *  The easiest way to enable this option is to add `--cfg ditto_external_experimental_bus="true"`
+ *  to the RUSTFLAGS environment variable before building the shared library.
+ *
+ *  Note that as of writing of this doc, RUSTFLAGS must also contain `--cfg tokio_unstable` for
+ *  ditto to compile successfully.
+ */
+Bus_t
+/* fn */ dittoffi_get_experimental_bus (
+    CDitto_t const * ditto);
+
 /** \brief
  *  Returns a human-readable SDK version string, restricted to the SemVer
  *  "number" (including the pre-release specifier, if any).
@@ -3956,6 +4761,45 @@ char *
 char *
 /* fn */ dittoffi_panic_stack_trace_string (
     dittoffi_panic_t const * panic);
+
+/** \brief
+ *  Clones a `PeerPubkey`.
+ */
+void_const_ptr_2_array_t
+/* fn */ dittoffi_peer_pubkey_clone (
+    void_const_ptr_2_array_t const * peer_pubkey);
+
+/** <No documentation available> */
+void
+/* fn */ dittoffi_peer_pubkey_delete (
+    void_const_ptr_2_array_t key);
+
+/** \brief
+ *  Simplified for lighter documentation, but the actual impls
+ *  range from `Tuple1` up to `Tuple6`.
+ */
+typedef struct Tuple2_bool_void_const_ptr_2_array {
+    /** <No documentation available> */
+    bool _0;
+
+    /** <No documentation available> */
+    void_const_ptr_2_array_t _1;
+} Tuple2_bool_void_const_ptr_2_array_t;
+
+/** \brief
+ *  Parses a `PeerPubkey` from a PeerPubkeyStr, returning `TaggedOption::None` in case of
+ *  failure.
+ */
+Tuple2_bool_void_const_ptr_2_array_t
+/* fn */ dittoffi_peer_pubkey_from_str (
+    slice_ref_uint8_t s);
+
+/** \brief
+ *  Converts a `PeerPubkey` into a string through its `Display` implementation.
+ */
+slice_boxed_uint8_t
+/* fn */ dittoffi_peer_pubkey_to_cstr (
+    void_const_ptr_2_array_t const * peer_pubkey);
 
 /** \brief
  *  Returns the current presence graph as a JSON string in a UTF-8 encoded byte array.
@@ -4047,9 +4891,6 @@ dittoffi_result_dittoffi_presence_observer_ptr_t
 /* fn */ dittoffi_presence_register_observer_throws (
     CDitto_t const * ditto,
     BoxDynFnMut1_void_slice_boxed_uint8_t callback);
-
-/** <No documentation available> */
-typedef struct Erased Erased_t;
 
 /** <No documentation available> */
 typedef struct FfiConnectionRequestHandlerVTable {
@@ -4569,6 +5410,11 @@ void
 /* fn */ dittoffi_sync_subscriptions_free_sparse (
     Vec_dittoffi_sync_subscription_ptr_t vec);
 
+/** <No documentation available> */
+slice_ref_uint8_t
+/* fn */ dittoffi_topic_as_str (
+    Topic_t const * topic);
+
 /** \brief
  *  The action to take when completing a transaction.
  */
@@ -4749,21 +5595,6 @@ dittoffi_result_void_t
 /* fn */ dittoffi_try_collection (
     CDitto_t const * ditto,
     char const * name);
-
-/** <No documentation available> */
-typedef struct dittoffi_result_bool {
-    /** \brief
-     *  Non-`NULL` pointer to opaque object on error, `NULL` otherwise.
-     */
-    dittoffi_error_t * error;
-
-    /** \brief
-     *  When no error occurred, the success value payload can be retrieved here.
-     *
-     *  Otherwise, the value is to be ignored.
-     */
-    bool success;
-} dittoffi_result_bool_t;
 
 /** <No documentation available> */
 dittoffi_result_bool_t

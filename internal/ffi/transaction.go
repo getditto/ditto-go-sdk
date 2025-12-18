@@ -15,27 +15,27 @@ extern void goTransactionCompleteCallback(void* context, dittoffi_result_dittoff
 extern void goTransactionCompleteFree(void* context);
 
 // Helper to create transaction begin callback struct
-static continuation_dittoffi_result_dittoffi_transaction_ptr_t create_transaction_begin_callback(void* context) {
+static continuation_dittoffi_result_dittoffi_transaction_ptr_t create_transaction_begin_callback(uintptr_t context) {
     continuation_dittoffi_result_dittoffi_transaction_ptr_t cb;
-    cb.env_ptr = context;
+    cb.env_ptr = (void *)context;
     cb.call = goTransactionBeginCallback;
     cb.free = goTransactionBeginFree;
     return cb;
 }
 
 // Helper to create transaction execute callback struct
-static continuation_dittoffi_result_dittoffi_query_result_ptr_t create_transaction_execute_callback(void* context) {
+static continuation_dittoffi_result_dittoffi_query_result_ptr_t create_transaction_execute_callback(uintptr_t context) {
     continuation_dittoffi_result_dittoffi_query_result_ptr_t cb;
-    cb.env_ptr = context;
+    cb.env_ptr = (void *)context;
     cb.call = goTransactionExecuteCallback;
     cb.free = goTransactionExecuteFree;
     return cb;
 }
 
 // Helper to create transaction complete callback struct
-static continuation_dittoffi_result_dittoffi_transaction_completion_action_t create_transaction_complete_callback(void* context) {
+static continuation_dittoffi_result_dittoffi_transaction_completion_action_t create_transaction_complete_callback(uintptr_t context) {
     continuation_dittoffi_result_dittoffi_transaction_completion_action_t cb;
-    cb.env_ptr = context;
+    cb.env_ptr = (void *)context;
     cb.call = goTransactionCompleteCallback;
     cb.free = goTransactionCompleteFree;
     return cb;
@@ -177,7 +177,8 @@ func goTransactionBeginCallback(contextPtr unsafe.Pointer, result C.dittoffi_res
 	}
 
 	// Success case
-	handle := &TransactionHandle{ptr: result.success}
+	handle := &TransactionHandle{}
+	handle.Initialize(transactionHandleFreer{ptr: result.success})
 	beginCtx.callback(handle, nil)
 }
 
@@ -236,7 +237,8 @@ func goTransactionExecuteCallback(contextPtr unsafe.Pointer, result C.dittoffi_r
 	}
 
 	// Success case
-	handle := &QueryResultHandle{ptr: result.success}
+	handle := &QueryResultHandle{}
+	handle.Initialize(queryResultHandleFreer{ptr: result.success})
 	execCtx.callback(handle, nil)
 }
 
@@ -317,7 +319,15 @@ func goTransactionCompleteFree(contextPtr unsafe.Pointer) {
 
 // TransactionHandle wraps the C DQL transaction pointer
 type TransactionHandle struct {
+	HandleCleaner[transactionHandleFreer]
+}
+
+type transactionHandleFreer struct {
 	ptr *C.dittoffi_transaction_t
+}
+
+func (h transactionHandleFreer) free() {
+	C.dittoffi_transaction_free(h.ptr)
 }
 
 // TransactionCompletionAction represents how to complete a transaction.
@@ -353,7 +363,7 @@ func StoreBeginTransactionAsyncThrows(handle *DittoHandle, hint *string, isReadO
 	})
 	defer UnregisterTransactionBeginCallback(callbackID)
 
-	cCallback := C.create_transaction_begin_callback(unsafe.Pointer(callbackID))
+	cCallback := C.create_transaction_begin_callback(C.uintptr_t(callbackID))
 
 	options := C.dittoffi_store_begin_transaction_options_make()
 	options.is_read_only = C._Bool(isReadOnly)
@@ -372,7 +382,7 @@ func StoreBeginTransactionAsyncThrows(handle *DittoHandle, hint *string, isReadO
 
 // TransactionExecuteAsyncThrows executes a query within a transaction
 func TransactionExecuteAsyncThrows(tx *TransactionHandle, query string, args map[string]any) (*QueryResultHandle, error) {
-	if tx == nil || tx.ptr == nil {
+	if tx == nil || tx.inner.ptr == nil {
 		return nil, fmt.Errorf("invalid transaction handle")
 	}
 
@@ -409,10 +419,10 @@ func TransactionExecuteAsyncThrows(tx *TransactionHandle, query string, args map
 	})
 	defer UnregisterTransactionExecuteCallback(callbackID)
 
-	cCallback := C.create_transaction_execute_callback(unsafe.Pointer(callbackID))
+	cCallback := C.create_transaction_execute_callback(C.uintptr_t(callbackID))
 
 	C.dittoffi_transaction_execute_async_throws(
-		tx.ptr,
+		tx.inner.ptr,
 		cQuery,
 		argsSlice,
 		cCallback)
@@ -424,7 +434,7 @@ func TransactionExecuteAsyncThrows(tx *TransactionHandle, query string, args map
 
 // TransactionCompleteAsyncThrows completes a transaction
 func TransactionCompleteAsyncThrows(tx *TransactionHandle, action TransactionCompletionAction) (TransactionCompletionAction, error) {
-	if tx == nil || tx.ptr == nil {
+	if tx == nil || tx.inner.ptr == nil {
 		return 0, fmt.Errorf("invalid transaction handle")
 	}
 
@@ -444,10 +454,10 @@ func TransactionCompleteAsyncThrows(tx *TransactionHandle, action TransactionCom
 	})
 	defer UnregisterTransactionCompleteCallback(callbackID)
 
-	cCallback := C.create_transaction_complete_callback(unsafe.Pointer(callbackID))
+	cCallback := C.create_transaction_complete_callback(C.uintptr_t(callbackID))
 
 	C.dittoffi_transaction_complete_async_throws(
-		tx.ptr,
+		tx.inner.ptr,
 		C.dittoffi_transaction_completion_action_t(action),
 		cCallback)
 
@@ -458,11 +468,11 @@ func TransactionCompleteAsyncThrows(tx *TransactionHandle, action TransactionCom
 
 // TransactionInfo gets transaction metadata
 func TransactionInfo(tx *TransactionHandle) ([]byte, error) {
-	if tx == nil || tx.ptr == nil {
+	if tx == nil || tx.inner.ptr == nil {
 		return nil, fmt.Errorf("invalid transaction handle")
 	}
 
-	result := C.dittoffi_transaction_info(tx.ptr)
+	result := C.dittoffi_transaction_info(tx.inner.ptr)
 
 	if result.ptr == nil || result.len == 0 {
 		return nil, fmt.Errorf("transaction info returned empty")
@@ -470,12 +480,4 @@ func TransactionInfo(tx *TransactionHandle) ([]byte, error) {
 	info := bytesFromFFI(result)
 
 	return info, nil
-}
-
-// TransactionFree releases transaction resources
-func TransactionFree(tx *TransactionHandle) {
-	if tx != nil && tx.ptr != nil {
-		C.dittoffi_transaction_free(tx.ptr)
-		tx.ptr = nil
-	}
 }

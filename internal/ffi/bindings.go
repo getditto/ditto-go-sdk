@@ -12,15 +12,23 @@
 // interaction between Go and C code:
 //
 // ## 1. Resource Management Pattern (RAII-style)
-// All FFI resources are wrapped in handle types with finalizers to ensure cleanup.
-// - Dual cleanup: explicit Close() methods + runtime finalizers as safety net
-// - Atomic flags prevent double-free vulnerabilities
+// All FFI resources are wrapped in handle types with HandleCleaner to ensure cleanup.
+// - Dual cleanup: explicit Close()/Free() methods + runtime.Cleanup as safety net
+// - sync.Once prevents double-free vulnerabilities
 // - Example: DittoHandle, StoreHandle, StoreObserverHandle
 //
-// ## 2. Safe Callback Context Management (runtime.Pinner)
-// Go 1.21+ runtime.Pinner ensures callback contexts remain valid during FFI calls.
-// - Prevents GC from moving/collecting callback data during C execution
-// - Automatic unpinning when FFI call completes
+// ## 2. Safe Callback Context Management (sync.Map from callbackID to context)
+// While some of Core's functions can take an arbitrary pointer-sized context,
+// all pointers to Go memory that are passed to (or referencable by) a CGo function
+// must be pinned (runtime.Pinner).
+// Since some of the context is the caller's callback closure, this may include
+// unknown references to arbitrary Go memory that, lacking a direct reference,
+// we cannot pin. Keeping the callback struct in a separate map allows keeping
+// it in Go memory that is never referenced (by pointer) by CGo, and therefore
+// does not need to be pinned.
+// Use sync.Map rather than a plain map[uintptr]*context + Mutex to provide
+// nominally better performance. sync.Map is a good fit because it is optimized
+// for a single write per key.
 //
 // ## 3. Panic Recovery at FFI Boundaries
 // All Go callbacks invoked from C have panic recovery to prevent process crashes.
@@ -60,25 +68,20 @@
 // Panics in Go callbacks are caught and converted to error returns or logged,
 // ensuring the process remains stable even with runtime errors.
 //
-// ## 2. Safe Context Management with runtime.Pinner
-// Uses runtime.Pinner (Go 1.21+) to ensure callback contexts remain valid:
-// - Pins Go memory during FFI calls to prevent GC from moving/collecting it
-// - Automatically unpins when the callback completes
-// - Prevents use-after-free and dangling pointer issues
-//
-// ## 3. Thread-Safe Callback Registry
+// ## 2. Thread-Safe Callback Registry
 // Uses sync.Map for lock-free concurrent access to callback contexts:
 // - No mutex contention on reads (common case)
 // - Atomic ID generation prevents race conditions
 // - Safe concurrent registration and unregistration
+// - Keeps arbitrary Go memory from callback closures from being passed to C
 //
-// ## 4. Callback Lifecycle Management
+// ## 3. Callback Lifecycle Management
 // Proper retain/release semantics for callback contexts:
 // - Reference counting prevents premature cleanup
 // - Explicit free functions called by C when callbacks are no longer needed
 // - Automatic cleanup on unregistration
 //
-// ## 5. Type-Safe Callback Wrappers
+// ## 4. Type-Safe Callback Wrappers
 // C wrapper functions provide type safety at the FFI boundary:
 // - Proper function signature matching
 // - Context pointer validation
@@ -103,7 +106,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync/atomic"
 	"unsafe"
 
 	"github.com/getditto/ditto-go-sdk/v5/internal/cbor"
@@ -121,70 +123,40 @@ const (
 // DittoHandle wraps the C Ditto pointer with safe resource management.
 // It implements the RAII pattern with dual cleanup mechanisms:
 // 1. Explicit cleanup via Close() method
-// 2. Automatic cleanup via runtime finalizer as safety net
+// 2. Automatic cleanup via runtime.Cleanup as safety net
 // The atomic finalized flag ensures the resource is freed exactly once,
 // preventing double-free vulnerabilities even in concurrent scenarios.
 type DittoHandle struct {
-	ptr unsafe.Pointer // *C.CDitto_t
+	HandleCleaner[dittoHandleFreer]
+}
+
+type dittoHandleFreer struct {
+	ptr *C.CDitto_t
+}
+
+func (i dittoHandleFreer) free() {
+	C.ditto_free(i.ptr)
 }
 
 // NewDittoHandle creates a new managed Ditto handle with automatic cleanup.
-// Safety features:
-// - Nil check prevents invalid handle creation
-// - Runtime finalizer ensures cleanup even if Close() is not called
-// - Atomic operations prevent race conditions during cleanup
 // Precondition: ptr is not nil
 func NewDittoHandle(ptr *C.CDitto_t) *DittoHandle {
 	handle := &DittoHandle{}
-	handle.store(ptr)
-
-	// Set finalizer for automatic cleanup
-	// This acts as a safety net if the user forgets to call Close()
-	runtime.SetFinalizer(handle, (*DittoHandle).finalize)
+	handle.Initialize(dittoHandleFreer{ptr: ptr})
 	return handle
 }
 
-// Preferably, these atomic ops would be implemented by atomic.Pointer[C.CDitto_t].
-// However Go generics can't handle incomplete CGo types.
-// These (load, store, swap) are inlined versions of atomic.Pointer's methods.
-
 func (h *DittoHandle) load() *C.CDitto_t {
-	return (*C.CDitto_t)(atomic.LoadPointer(&h.ptr))
-}
-
-func (h *DittoHandle) store(ptr *C.CDitto_t) {
-	atomic.StorePointer(&h.ptr, unsafe.Pointer(ptr))
-}
-
-func (h *DittoHandle) swap(ptr *C.CDitto_t) *C.CDitto_t {
-	return (*C.CDitto_t)(atomic.SwapPointer(&h.ptr, unsafe.Pointer(ptr)))
+	return h.inner.ptr
 }
 
 // Close explicitly closes the Ditto handle and releases resources.
-// Safety features:
-// - Atomic swap ensures single execution even with concurrent calls
-// - Clears finalizer after successful cleanup to avoid GC overhead
-// - Nil checks prevent crashes from invalid handles
-// - Idempotent: safe to call multiple times
 func (h *DittoHandle) Close() {
 	ffiDebugTrace("DittoHandle.Close called")
 	if h == nil {
 		return
 	}
-
-	// Atomic swap ensures this runs exactly once
-	if freeMe := h.swap(nil); freeMe != nil {
-		C.ditto_free(freeMe)
-		// Clear finalizer since we've cleaned up
-		runtime.SetFinalizer(h, nil)
-	}
-}
-
-// finalize is called by the garbage collector as a safety net.
-// This ensures resources are freed even if Close() is never called explicitly.
-// The atomic flag in Close() prevents double-free if both paths execute.
-func (h *DittoHandle) finalize() {
-	h.Close()
+	h.Free()
 }
 
 // IsValid returns true if the handle is valid and not closed.
@@ -192,25 +164,34 @@ func (h *DittoHandle) IsValid() bool {
 	return h != nil && h.load() != nil
 }
 
-// StoreObserverHandle wraps an observer
-type StoreObserverHandle struct {
-	ptr        *C.dittoffi_store_observer_t
-	callbackID uintptr // Track the callback ID for cleanup
-}
-
 // SubscriptionHandle wraps a subscription
 type SubscriptionHandle struct {
+	HandleCleaner[subscriptionHandleFreer]
+}
+
+type subscriptionHandleFreer struct {
 	ptr *C.dittoffi_sync_subscription_t
 }
 
+func (s subscriptionHandleFreer) free() {
+	C.dittoffi_sync_subscription_free(s.ptr)
+}
+
 func (h *SubscriptionHandle) IsValid() bool {
-	return h != nil && h.ptr != nil
+	return h != nil && h.inner.ptr != nil
 }
 
 // QueryResultHandle wraps the C QueryResult pointer with safe resource management
 type QueryResultHandle struct {
-	ptr       *C.dittoffi_query_result_t
-	finalized int32 // atomic flag to prevent double-free
+	HandleCleaner[queryResultHandleFreer]
+}
+
+type queryResultHandleFreer struct {
+	ptr *C.dittoffi_query_result_t
+}
+
+func (i queryResultHandleFreer) free() {
+	C.dittoffi_query_result_free(i.ptr)
 }
 
 // NewQueryResultHandle creates a new managed query result handle
@@ -219,12 +200,8 @@ func NewQueryResultHandle(ptr *C.dittoffi_query_result_t) *QueryResultHandle {
 		return nil
 	}
 
-	handle := &QueryResultHandle{
-		ptr: ptr,
-	}
-
-	// Set finalizer for automatic cleanup
-	runtime.SetFinalizer(handle, (*QueryResultHandle).finalize)
+	handle := &QueryResultHandle{}
+	handle.Initialize(queryResultHandleFreer{ptr: ptr})
 	return handle
 }
 
@@ -235,23 +212,12 @@ func (h *QueryResultHandle) Close() {
 		return
 	}
 
-	if atomic.CompareAndSwapInt32(&h.finalized, 0, 1) {
-		if h.ptr != nil {
-			C.dittoffi_query_result_free(h.ptr)
-			h.ptr = nil
-		}
-		runtime.SetFinalizer(h, nil)
-	}
-}
-
-// finalize is called by the garbage collector
-func (h *QueryResultHandle) finalize() {
-	h.Close()
+	h.Free()
 }
 
 // IsValid returns true if the handle is valid and not closed
 func (h *QueryResultHandle) IsValid() bool {
-	return h != nil && atomic.LoadInt32(&h.finalized) == 0 && h.ptr != nil
+	return h != nil && h.inner.ptr != nil
 }
 
 // DefaultRootDirectory returns the default root directory for persistence
@@ -444,7 +410,7 @@ func GetQueryResultItemCount(handle *QueryResultHandle) int {
 	if !handle.IsValid() {
 		return 0
 	}
-	return int(C.dittoffi_query_result_item_count(handle.ptr))
+	return int(C.dittoffi_query_result_item_count(handle.inner.ptr))
 }
 
 // GetQueryResultItemCBOR returns the raw CBOR data for an item at the specified index
@@ -456,7 +422,7 @@ func GetQueryResultItemCBOR(handle *QueryResultHandle, index int) ([]byte, error
 	}
 
 	// Get the item at index
-	item := C.dittoffi_query_result_item_at(handle.ptr, C.size_t(index))
+	item := C.dittoffi_query_result_item_at(handle.inner.ptr, C.size_t(index))
 	if item == nil {
 		return nil, fmt.Errorf("invalid index %d", index)
 	}
@@ -500,7 +466,7 @@ func GetQueryResultItemJSON(handle *QueryResultHandle, index int) (string, error
 	}
 
 	// Get the item at index
-	item := C.dittoffi_query_result_item_at(handle.ptr, C.size_t(index))
+	item := C.dittoffi_query_result_item_at(handle.inner.ptr, C.size_t(index))
 	if item == nil {
 		return "", fmt.Errorf("invalid index %d", index)
 	}
@@ -751,16 +717,41 @@ func SyncRegisterSubscriptionThrows(ditto *DittoHandle, query string, args map[s
 		return nil, fmt.Errorf("subscription registration returned nil")
 	}
 
-	return &SubscriptionHandle{ptr: result.success}, nil
+	handle := SubscriptionHandle{}
+	handle.Initialize(subscriptionHandleFreer{ptr: result.success})
+	return &handle, nil
 }
 
 // CancelSubscription cancels a subscription
 func CancelSubscription(handle *SubscriptionHandle) {
 	ffiDebugTrace("CancelSubscription called")
 
-	C.dittoffi_sync_subscription_cancel(handle.ptr)
-	C.dittoffi_sync_subscription_free(handle.ptr)
-	handle.ptr = nil
+	C.dittoffi_sync_subscription_cancel(handle.inner.ptr)
+	handle.Free()
+}
+
+func SyncSubscriptionIsCancelled(handle *SubscriptionHandle) bool {
+	if handle == nil || handle.inner.ptr == nil {
+		return true
+	}
+	return bool(C.dittoffi_sync_subscription_is_cancelled(handle.inner.ptr))
+}
+
+func SyncSubscriptionQueryString(handle *SubscriptionHandle) string {
+	if handle == nil || handle.inner.ptr == nil {
+		return ""
+	}
+	cStr := C.dittoffi_sync_subscription_query_string(handle.inner.ptr)
+	return stringFromFFI(cStr)
+}
+
+func SyncSubscriptionQueryArguments(handle *SubscriptionHandle) []byte {
+	if handle == nil || handle.inner.ptr == nil {
+		return nil
+	}
+	cborSlice := C.dittoffi_sync_subscription_query_arguments_cbor(handle.inner.ptr)
+	cborBytes := bytesFromFFI(cborSlice)
+	return cborBytes
 }
 
 // SmallPeerInfoSyncScope represents the sync scope for small peer info
@@ -830,21 +821,21 @@ func SetOfflineOnlyLicenseToken(ditto *DittoHandle, token string) error {
 func GetQueryResultMutatedDocumentIDCount(result *QueryResultHandle) int {
 	ffiDebugTrace("GetQueryResultMutatedDocumentIDCount called")
 
-	if result == nil || result.ptr == nil {
+	if result == nil || result.inner.ptr == nil {
 		return 0
 	}
-	count := C.dittoffi_query_result_mutated_document_id_count(result.ptr)
+	count := C.dittoffi_query_result_mutated_document_id_count(result.inner.ptr)
 	return int(count)
 }
 
 // GetQueryResultMutatedDocumentIDAt returns the CBOR data for a mutated document ID at the given index
 func GetQueryResultMutatedDocumentIDAt(result *QueryResultHandle, index int) ([]byte, error) {
-	if result == nil || result.ptr == nil {
+	if result == nil || result.inner.ptr == nil {
 		return nil, fmt.Errorf("invalid query result handle")
 	}
 
 	// Call FFI function to get CBOR slice
-	cborSlice := C.dittoffi_query_result_mutated_document_id_at(result.ptr, C.size_t(index))
+	cborSlice := C.dittoffi_query_result_mutated_document_id_at(result.inner.ptr, C.size_t(index))
 
 	if cborSlice.ptr == nil || cborSlice.len == 0 {
 		return nil, fmt.Errorf("no document ID at index %d", index)
@@ -858,12 +849,12 @@ func GetQueryResultMutatedDocumentIDAt(result *QueryResultHandle, index int) ([]
 func GetQueryResultCommitID(result *QueryResultHandle) (uint64, bool) {
 	ffiDebugTrace("GetQueryResultCommitID called")
 
-	if result == nil || result.ptr == nil {
+	if result == nil || result.inner.ptr == nil {
 		return 0, false
 	}
 
-	if C.dittoffi_query_result_has_commit_id(result.ptr) {
-		return uint64(C.dittoffi_query_result_commit_id(result.ptr)), true
+	if C.dittoffi_query_result_has_commit_id(result.inner.ptr) {
+		return uint64(C.dittoffi_query_result_commit_id(result.inner.ptr)), true
 	} else {
 		return 0, false
 	}
@@ -876,36 +867,37 @@ func GetQueryResultItemAt(handle *QueryResultHandle, index int) (*QueryResultIte
 	}
 
 	// Get the item at index
-	item := C.dittoffi_query_result_item_at(handle.ptr, C.size_t(index))
+	item := C.dittoffi_query_result_item_at(handle.inner.ptr, C.size_t(index))
 	if item == nil {
 		return nil, fmt.Errorf("invalid index %d", index)
 	}
 
-	itemHandle := &QueryResultItemHandle{
-		ptr: item,
-	}
-
-	runtime.SetFinalizer(itemHandle, func(h *QueryResultItemHandle) {
-		h.Free()
-	})
-
+	itemHandle := &QueryResultItemHandle{}
+	itemHandle.Initialize(queryResultItemHandleFreer{ptr: item})
 	return itemHandle, nil
 }
 
 // QueryResultItemHandle wraps the C QueryResultItem pointer with safe resource management
 type QueryResultItemHandle struct {
-	ptr       *C.dittoffi_query_result_item_t
-	finalized int32 // atomic flag to prevent double-free
+	HandleCleaner[queryResultItemHandleFreer]
+}
+
+type queryResultItemHandleFreer struct {
+	ptr *C.dittoffi_query_result_item_t
+}
+
+func (c queryResultItemHandleFreer) free() {
+	C.dittoffi_query_result_item_free(c.ptr)
 }
 
 // GetQueryResultItemCBORFromHandle returns the CBOR data from a QueryResultItemHandle
 func GetQueryResultItemCBORFromHandle(handle *QueryResultItemHandle) ([]byte, error) {
-	if handle == nil || handle.ptr == nil {
+	if handle == nil || handle.inner.ptr == nil {
 		return nil, fmt.Errorf("invalid query result item handle")
 	}
 
 	// Get CBOR data
-	cborData := C.dittoffi_query_result_item_cbor(handle.ptr)
+	cborData := C.dittoffi_query_result_item_cbor(handle.inner.ptr)
 	if cborData.ptr == nil || cborData.len == 0 {
 		return nil, fmt.Errorf("no CBOR data available")
 	}
@@ -922,7 +914,7 @@ func GetQueryResultItemJSONData(handle *QueryResultItemHandle) ([]byte, error) {
 	}
 
 	// Get JSON string
-	jsonStr := C.dittoffi_query_result_item_json(handle.ptr)
+	jsonStr := C.dittoffi_query_result_item_json(handle.inner.ptr)
 	if jsonStr == nil {
 		return nil, fmt.Errorf("failed to get JSON")
 	}
@@ -939,7 +931,7 @@ func GetQueryResultItemJSONString(handle *QueryResultItemHandle) (string, error)
 	}
 
 	// Get JSON string
-	jsonStr := C.dittoffi_query_result_item_json(handle.ptr)
+	jsonStr := C.dittoffi_query_result_item_json(handle.inner.ptr)
 	if jsonStr == nil {
 		return "", fmt.Errorf("failed to get JSON")
 	}
@@ -968,37 +960,14 @@ func NewQueryResultItemFromJSON(jsonData []byte) (*QueryResultItemHandle, error)
 		return nil, fmt.Errorf("failed to create query result item")
 	}
 
-	handle := &QueryResultItemHandle{
-		ptr: result.success,
-	}
-
-	runtime.SetFinalizer(handle, func(h *QueryResultItemHandle) {
-		h.Free()
-	})
-
+	handle := &QueryResultItemHandle{}
+	handle.Initialize(queryResultItemHandleFreer{ptr: result.success})
 	return handle, nil
-}
-
-// Free releases the underlying C resources for a QueryResultItemHandle
-func (h *QueryResultItemHandle) Free() {
-	ffiDebugTrace("QueryResultItemHandle.Free() called")
-
-	if h == nil {
-		return
-	}
-
-	// Use atomic compare-and-swap to ensure we only free once
-	if atomic.CompareAndSwapInt32(&h.finalized, 0, 1) {
-		if h.ptr != nil {
-			C.dittoffi_query_result_item_free(h.ptr)
-			h.ptr = nil
-		}
-	}
 }
 
 // IsValid checks if the handle is still valid (not freed)
 func (h *QueryResultItemHandle) IsValid() bool {
-	return h != nil && h.ptr != nil && atomic.LoadInt32(&h.finalized) == 0
+	return h != nil && h.inner.ptr != nil
 }
 
 // GetStoreTransactions returns CBOR data containing information about currently active transactions

@@ -88,8 +88,16 @@ func GetPresenceCallback(id uintptr) func([]byte) {
 
 // PresenceObserverHandle represents a presence observer
 type PresenceObserverHandle struct {
-	ptr        *C.dittoffi_presence_observer_t
+	HandleCleaner[presenceObserverHandleFreer]
 	callbackID uintptr
+}
+
+type presenceObserverHandleFreer struct {
+	ptr *C.dittoffi_presence_observer_t
+}
+
+func (p presenceObserverHandleFreer) free() {
+	C.dittoffi_presence_observer_free(p.ptr)
 }
 
 // GetPresenceGraph returns the current presence graph as JSON
@@ -155,20 +163,19 @@ func RegisterPresenceObserver(handle *DittoHandle, callback func([]byte)) (*Pres
 		return nil, errorFromFFIError(result.error)
 	}
 
-	return &PresenceObserverHandle{
-		ptr:        result.success,
-		callbackID: callbackID,
-	}, nil
+	p := &PresenceObserverHandle{}
+	p.Initialize(presenceObserverHandleFreer{ptr: result.success})
+	p.callbackID = callbackID
+	return p, nil
 }
 
 // CancelPresenceObserver cancels a presence observer
 func CancelPresenceObserver(handle *PresenceObserverHandle) {
 	ffiDebugTrace("CancelPresenceObserver called")
 
-	if handle != nil && handle.ptr != nil {
-		C.dittoffi_presence_observer_cancel(handle.ptr)
-		C.dittoffi_presence_observer_free(handle.ptr)
-		handle.ptr = nil
+	if handle != nil && handle.inner.ptr != nil {
+		C.dittoffi_presence_observer_cancel(handle.inner.ptr)
+		handle.Free()
 
 		// Unregister the Go callback
 		if handle.callbackID != 0 {
@@ -323,6 +330,8 @@ func goConnectionRequestHandler(contextPtr unsafe.Pointer, requestPtr *C.dittoff
 
 	// Authorize the request
 	C.dittoffi_connection_request_authorize(requestPtr, ffiAuth)
+
+	C.dittoffi_connection_request_free(requestPtr)
 }
 
 //export goConnectionHandlerRetain

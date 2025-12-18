@@ -180,7 +180,7 @@ func (t *Transaction) Info() TransactionInfo {
 
 // cleanup ensures cleanup of the transaction resources.
 //
-// This method is called internally by the finalizer to ensure FFI resources
+// This method is deferred by Store.Transaction() to ensure FFI resources
 // are properly released. It is safe to call multiple times.
 func (t *Transaction) cleanup() {
 	t.mu.Lock()
@@ -195,7 +195,7 @@ func (t *Transaction) cleanup() {
 	t.closed = true
 
 	// Free the transaction handle
-	ffi.TransactionFree(t.handle)
+	t.handle.Free()
 }
 
 // Store returns the Store instance that this transaction belongs to.

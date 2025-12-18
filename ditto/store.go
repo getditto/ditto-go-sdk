@@ -4,7 +4,6 @@ package ditto
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/getditto/ditto-go-sdk/v5/internal/cbor"
 	"github.com/getditto/ditto-go-sdk/v5/internal/ffi"
@@ -49,9 +48,6 @@ type QueryExecutor interface {
 type Store struct {
 	ditto       *Ditto
 	dittoHandle *ffi.DittoHandle
-
-	mu        sync.RWMutex
-	observers []*StoreObserver
 }
 
 // newStore creates a new Store instance.
@@ -148,9 +144,6 @@ func (s *Store) RegisterObserver(query string, args QueryArguments, handler Stor
 		return nil, &DittoError{Code: ffi.ErrorCodeInternal, Message: "store observation handler is nil"}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.dittoHandle.IsValid() {
 		return nil, ErrDittoClosed
 	}
@@ -178,14 +171,9 @@ func (s *Store) RegisterObserver(query string, args QueryArguments, handler Stor
 	}
 
 	observer := &StoreObserver{
-		store:     s,
-		handle:    observerHandle,
-		query:     query,
-		queryArgs: args,
-		callback:  handler,
+		ditto:  s.ditto,
+		handle: observerHandle,
 	}
-
-	s.observers = append(s.observers, observer)
 
 	return observer, nil
 }
@@ -220,9 +208,6 @@ func (s *Store) RegisterObserverWithSignalNext(query string, args QueryArguments
 		return nil, &DittoError{Code: ffi.ErrorCodeInternal, Message: "store observation handler is nil"}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.dittoHandle.IsValid() {
 		return nil, ErrDittoClosed
 	}
@@ -249,14 +234,9 @@ func (s *Store) RegisterObserverWithSignalNext(query string, args QueryArguments
 	}
 
 	observer := &StoreObserver{
-		store:                  s,
-		handle:                 observerHandle,
-		query:                  query,
-		queryArgs:              args,
-		callbackWithSignalNext: handler,
+		ditto:  s.ditto,
+		handle: observerHandle,
 	}
-
-	s.observers = append(s.observers, observer)
 
 	return observer, nil
 }
@@ -275,10 +255,10 @@ func (s *Store) RegisterObserverWithSignalNext(query string, args QueryArguments
 //
 // The order of the values in the result is not defined, and may vary between calls.
 // The result should be treated as an unordered set.
+//
+// The *StoreObservers returned by Observers and RegisterObserver will not be
+// identical between calls, even if they represent the same observation.
 func (s *Store) Observers() []*StoreObserver {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// Get observers from FFI
 	observerHandles, err := ffi.StoreObservers(s.dittoHandle)
 	if err != nil {
@@ -287,18 +267,11 @@ func (s *Store) Observers() []*StoreObserver {
 
 	// Convert FFI handles to StoreObserver instances
 	observers := make([]*StoreObserver, 0, len(observerHandles))
-
-	// Match FFI handles with our tracked observers
-	for _, trackedObserver := range s.observers {
-		if trackedObserver != nil && trackedObserver.handle != nil {
-			// Check if this observer is still active according to FFI
-			for _, ffiHandle := range observerHandles {
-				if ffiHandle != nil && ffiHandle == trackedObserver.handle {
-					observers = append(observers, trackedObserver)
-					break
-				}
-			}
-		}
+	for _, h := range observerHandles {
+		observers = append(observers, &StoreObserver{
+			ditto:  s.ditto,
+			handle: h,
+		})
 	}
 
 	return observers
@@ -521,11 +494,7 @@ func (s *Store) transactions() []*TransactionInfo {
 func (s *Store) cancelAllObservers() {
 	sdkDebugTrace("gosdk: Store.cancelAllObservers()")
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, observer := range s.observers {
+	for _, observer := range s.Observers() {
 		observer.Cancel()
 	}
-	s.observers = nil
 }
